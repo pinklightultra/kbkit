@@ -1,0 +1,5 @@
+# Normalize line endings so diffs show content, not CRLF noise.
+* text=auto eol=lf
+
+*.md diff=markdown
+*.py diff=python
