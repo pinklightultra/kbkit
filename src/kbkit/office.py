@@ -128,6 +128,8 @@ def docx_parts(src: Source, *, deleted: str = "mark") -> dict[str, str]:
     ``deleted`` controls tracked deletions: ``"mark"`` (default) renders
     ``[deleted: text]``, ``"keep"`` inlines the text, ``"drop"`` omits it.
     Checkboxes render as ``[x]`` / ``[ ]``, symbols as ``[sym:F0FC]``.
+    Table cells join with ``" | "``. Paragraphs inside one cell join with
+    ``" / "``.
     """
     if deleted not in ("mark", "keep", "drop"):
         raise ValueError("deleted must be 'mark', 'keep' or 'drop'")

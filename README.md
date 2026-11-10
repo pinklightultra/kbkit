@@ -1,11 +1,33 @@
 # kbkit
 
-Read a Confluence page the way a diff needs it read. kbkit turns Atlassian
-Document Format and HTML storage into text, tables, and links, and it reads
-the Jira epic from the row that names it.
+kbkit is for people checking a Confluence knowledge base: it reads a page the way a diff needs it read, turning Atlassian Document Format and HTML storage into text, tables, and links, and reading the Jira epic from the row that names it.
 
-Python 3.10 or newer. Standard library only. Hand it the export or the API
-payload you already have.
+Python 3.10 or newer. Standard library only. Hand it the export or the API payload you already have. There is no console script.
+
+## Quickstart
+
+The name `kbkit` on PyPI is [Kirkwood-Buff Analysis Toolkit](https://pypi.org/project/kbkit/), a different project. `pip install kbkit` will not install this one.
+
+```bash
+git clone https://github.com/pinklightultra/kbkit
+cd kbkit
+python3 -m pip install -e .
+python3 -c "import kbkit; print(kbkit.__version__)"
+```
+
+```
+0.2.0
+```
+
+`PYTHONPATH=src` works without the install:
+
+```bash
+PYTHONPATH=src python3 -c "import kbkit; print(kbkit.__version__)"
+```
+
+These commands use `python3`. On a machine where the interpreter is named `python`, use that. CI does: `actions/setup-python` provides `python`.
+
+## Use
 
 | Job | Call |
 | --- | --- |
@@ -21,49 +43,6 @@ Code transcript (`mcp.iter_tool_results`, `mcp.unwrap`, `mcp.pick`), matches
 a term list on word boundaries (`terms.TermList`), and reads `.docx` and
 `.xlsx` attachments (`office.docx_text`, `office.xlsx_rows`). `io.read_text`
 and `io.Tee` cover exports and report files.
-
-## The problem
-
-Tooling for a knowledge base of about 1,900 articles grew as one script per
-question. The copies shared bugs that return a wrong result and look
-finished.
-
-- A listing endpoint, past its offset cap, returned an empty page with a
-  total of 0. A normal loop treats that as the end. On one version of the
-  corpus that loop missed 41% of the articles. `paging.offset_pages` raises
-  `PageCapReached` with reason `empty_page_total_zero`.
-- Joining ADF text nodes with a space turns "Scanned", split across a bold
-  mark, into "Sca nned". A search for the word misses it. `adf.to_text`
-  concatenates inline text with no separator.
-- A tool result the harness truncated, diffed against the stored page, shows
-  the missing tail as a deletion in the middle of the body. `mcp.pick` drops
-  a truncated copy when a complete copy of the same key exists, and it
-  requires an explicit policy because the choice changes the answer.
-- Taking a page's epic from every issue key in the body credits one page
-  with 22 epics. It has one. The other 21 keys are its stories, and an
-  error-code table matches the same shape, which brings a scan to 36.
-  `jira.epic_keys` reads the `Jira Epic` row, or an `Epic:` / `Epic ID:`
-  line outside any table.
-
-Each parser is that fix, with a test that pins it. The rules are under
-[What the calls guarantee](#what-the-calls-guarantee).
-
-## Install
-
-```bash
-git clone https://github.com/pinklightultra/kbkit
-cd kbkit
-pip install -e .
-python -W error -m pytest -q
-```
-
-`pip install -e .` puts the package on the path. `PYTHONPATH=src` works
-without the install. The interface is the import: there is no console script.
-
-The name `kbkit` on PyPI is Kirkwood-Buff Analysis Toolkit, a different
-project. `pip install kbkit` will not install this one.
-
-## Use
 
 Render a page body. The heading is one word, and the smart link keeps its
 URL. A link mark stays visible text. `cards` returns both.
@@ -180,7 +159,8 @@ h.first_diff(h.normalize(staged), h.normalize(stored))
 is decoded once.
 
 Page a listing with your own fetch. `fetch(offset, limit)` returns
-`(items, total)`. kbkit calls that function.
+`(items, total)`. This one stands in for a server that, past offset 200,
+answers with an empty page and a total of 0.
 
 ```python
 from kbkit.paging import next_cursor, offset_pages, PageCapReached
@@ -190,20 +170,38 @@ next_cursor({
 })
 # 'abc+def='
 
+def fetch(offset, limit):
+    if offset >= 200:
+        return [], 0
+    return list(range(offset, min(offset + limit, 250))), None
+
+got = []
 try:
-    rows = list(offset_pages(lambda offset, limit: fetch(offset, limit), page_size=100))
+    for item in offset_pages(fetch, page_size=100):
+        got.append(item)
 except PageCapReached as exc:
     print("partial:", exc.items_seen, "stopped at", exc.offset, exc.reason)
+# partial: 200 stopped at 200 empty_page_total_zero
 ```
 
 A `+` in the cursor stays a `+`. `reason` is `max_offset`,
 `empty_page_total_zero`, or `short_page_below_total`.
 
-The other four modules:
+Term lists match on a word boundary. `Scan` does not hit `Scanned`.
+
+```python
+from kbkit.terms import TermList
+
+TermList(["Scan"]).find("Scanned and a SCAN run")
+# [('Scan', 14, 18)]
+```
+
+`str(TermList(...).report(texts))` is `"N listed terms found in M of K texts"`.
+
+The other calls take a transcript directory or a file you already have:
 
 ```python
 from kbkit import mcp, office, io as kio
-from kbkit.terms import TermList
 
 def page_id(rec):
     body = mcp.unwrap(rec["result"])
@@ -217,9 +215,6 @@ chosen = mcp.pick(
     policy="newest",   # or "longest"
 )
 
-TermList(["Scan"]).find("Scanned and a SCAN run")
-# [('Scan', 14, 18)]
-
 office.docx_text("attachment.docx")    # path or bytes
 office.xlsx_rows(xlsx_bytes)["Sheet1"]
 office.xlsx_sheets(xlsx_bytes)         # [{"name", "state"}, ...]
@@ -230,162 +225,50 @@ with kio.Tee("report.txt") as out:
     out("rows:", 3)
 ```
 
-`chosen` maps each page id to the record `pick` kept. `str(TermList(...).report(texts))`
-is `"N listed terms found in M of K texts"`.
+`chosen` maps each page id to the record `pick` kept. The file receives
+`rows: 3`. The same line is echoed to stdout.
 
-## What the calls guarantee
+## The problem
 
-### adf
+Tooling for a knowledge base of about 1,900 articles grew as one script per
+question. The copies shared bugs that return a wrong result and look
+finished.
 
-- Inline text inside a block is concatenated with no separator. Block nodes
-  end with a newline.
-- `inlineCard`, `blockCard`, and `embedCard` render wherever they sit,
-  including headings and table cells. The URL is `attrs.url`, then
-  `attrs.data.url`, then `attrs.data["@id"]`, then the JSON of `attrs.data`.
-  Pass `cards=` a callable `(node_type, url) -> str` to format them. The
-  default is the bare URL.
-- `hardBreak` is a newline. `mention` is `attrs.text`, or `@` plus `id`.
-  `emoji` is `attrs.text`, or `shortName`. `status` is its text. `date` is
-  the UTC calendar date. A rule is `---`. Media renders as `[media]`. An
-  extension renders its content, or `[extension: key]`. A `taskItem` is
-  prefixed `[ ]` or `[x]`. Bullet items are prefixed `- `. Ordered items
-  are numbered from `attrs.order`, which defaults to 1. Table cells join
-  with `" | "`, one row per line.
-- Unknown node types are walked through `content`. A JSON string is decoded.
-  A string that is not JSON is returned unchanged.
-- `cards()` returns cards and link marks in document order: `{type, url}`,
-  plus `text` for links.
-- `tables()` returns every table, nested tables included, as rows of cell
-  text.
-- `row_value()` looks for the label in column 0 or column 1 and returns the
-  cells after it. Matching is casefold equality after whitespace collapse.
-  A trailing colon needs a custom `match`. `nodes=True` returns
-  `(text, cell_node)` pairs. For the epic row, use `jira.epic_keys`.
-- `find_adf()` returns every dict with `type == "doc"`, and decodes JSON
-  strings nested inside JSON, including a document encoded twice. API
-  payloads often carry the ADF body that way.
-- `iter_nodes()` yields every dict node depth-first, in document order.
+- A listing endpoint, past its offset cap, returned an empty page with a
+  total of 0. A normal loop treats that as the end. On one version of the
+  corpus that loop missed 41% of the articles. `paging.offset_pages` raises
+  `PageCapReached` with reason `empty_page_total_zero`.
+- Joining ADF text nodes with a space turns "Scanned", split across a bold
+  mark, into "Sca nned". A search for the word misses it. `adf.to_text`
+  concatenates inline text with no separator.
+- A tool result the harness truncated, diffed against the stored page, shows
+  the missing tail as a deletion in the middle of the body. `mcp.pick` drops
+  a truncated copy when a complete copy of the same key exists, and it
+  requires an explicit policy because the choice changes the answer.
+- Taking a page's epic from every issue key in the body credits one page
+  with 22 epics. It has one. The other 21 keys are its stories, and an
+  error-code table matches the same shape, which brings a scan to 36.
+  `jira.epic_keys` reads the `Jira Epic` row, or an `Epic:` / `Epic ID:`
+  line outside any table.
 
-### htmltext
-
-- `visible_text()` skips `script` and `style`, decodes entities once, and
-  collapses whitespace. `&amp;lt;` becomes `&lt;`.
-- `normalize(nbsp=True)` turns U+00A0, `&nbsp;`, `&#160;`, and `&#xa0;` into
-  a space. The literal text `&amp;nbsp;` stays.
-- `normalize(strip_tail_style=True)` removes one `<style>` block, and only
-  when it is the last thing in the document. An earlier `<style>` stays.
-- `normalize(heading_ids=True)` removes `id` from `h1` through `h6` only.
-- `normalize()` always applies `rstrip()`, the same way for every input.
-  Run it on both sides of a diff.
-- `first_diff()` returns `None` when the inputs are equal. Otherwise
-  `{offset, a, b}`, each value a window of `context` characters (default
-  40) on either side of the first difference.
-- `table_rows()` lists every table's rows, nested tables separately, as
-  `{text, hrefs}` cells. The outer cell's text leaves the nested table out.
-  `text_outside_tables()` is the visible text with every table removed.
-
-### jira
-
-- `field_text()` checks, in order: an ADF doc, a cascading select
-  (`parent > child`), then `value`, `name`, `displayName`, `key`, `text`,
-  then a list joined with `", "`. Anything else becomes compact JSON. The
-  full value is kept.
-- `description_text()` accepts an issue or its `fields`. It handles ADF,
-  a plain string, and ADF delivered as a JSON string. It returns `""` when
-  the description is absent or blank.
-- `issue_keys()` returns unique keys in first-seen order. The pattern is
-  an uppercase letter, more uppercase letters or digits, a hyphen, and
-  digits, so `X-1` does not match. `ignore_case=True` also matches
-  lowercase keys, as in slugs, and returns them uppercased. `projects=`
-  keeps the prefixes you name.
-- `epic_keys(doc)` accepts an ADF doc, JSON text of one, or an HTML string.
-  It returns `(keys, source)`. The label matches `^jira\s*epic` in column
-  0 or 1, so `Jira Epic`, `JIRA Epic Link`, and `Jira epic:` all count.
-  Keys come from the next cell only: its text, its cards, and its link
-  targets. With no such row, an `Epic:` or `Epic ID:` line in a paragraph
-  or heading outside tables is the fallback. Source is `"row"`, `"line"`,
-  or `None`. Keys in the rest of the page stay out of the result.
-
-### paging
-
-- `next_cursor()` reads `resp["_links"]["next"]` and returns the named query
-  parameter (`cursor` by default), URL-unquoted with `unquote`. A literal
-  `+` stays a `+`.
-- `offset_pages(fetch, *, page_size, start=0, max_offset=None)` expects
-  `fetch(offset, limit)` to return `(items, total_or_None)`. It stops when
-  a page is shorter than `page_size`, or when `offset` reaches a reported
-  total. It raises `PageCapReached(offset, items_seen, reason)` when:
-  - `max_offset` is reached while the data is still open (`max_offset`)
-  - a later page is empty and `total` is 0 (`empty_page_total_zero`)
-  - a short page arrives while `total` says more items remain
-    (`short_page_below_total`)
-
-Items already yielded stay yielded. The exception carries the count.
-
-### mcp
-
-- `unwrap()` joins every text part. It accepts a part list, a dict whose
-  `content` is parts, a JSON string, or a decoded object, and it decodes
-  JSON nested inside JSON. `envelope=True` strips one `data` or `result`
-  wrapper. The default leaves those keys alone, because payloads use them.
-- `result_text()` joins the text parts and leaves them as text.
-- `iter_tool_results(root)` streams `*.jsonl` line by line, pairs
-  `tool_use` with `tool_result` by id, and skips malformed lines. A spill
-  file under `tool-results/*.txt` has `tool_name=None`, so a `tool=` filter
-  is matched against the file name. With `follow_spills=True` (the default),
-  a spill notice is replaced by the file's text when that file can be found.
-- `pick(records, key, *, policy)` requires `policy`: `newest` (mtime, then
-  line) or `longest`. A truncated copy is discarded when a complete copy of
-  the same key exists. Each chosen record is a shallow copy with `truncated`
-  set, and that flag is true only when every copy was truncated. The return
-  value maps key to record. `key` returning `None` skips the record.
-
-### terms
-
-- `TermList` matches on word boundaries, longest term first, so `Scan` misses
-  `Scanned` and `Acme` loses to `Acme Health` at the same position. Matching
-  is case-insensitive unless `case_sensitive=True`. Whitespace inside a term
-  matches any whitespace.
-- `report()` returns a `TermReport`. `str(report)` is
-  `"N listed terms found in M of K texts"`. The report has `counts`,
-  `terms_found`, and `per_text`. It has no `clean` attribute. A list is
-  evidence about the names on the list.
-
-### office
-
-- `docx_text()` and `docx_parts()` read a path or bytes with `zipfile` and
-  `ElementTree`. Tracked deletions render as `[deleted: text]` by default
-  (`deleted="mark"`; also `"keep"` and `"drop"`). Tabs, breaks, `[sym:XXXX]`
-  symbols, and checkboxes as `[x]` or `[ ]` are kept. Table rows join with
-  `" | "`. After the body: headers, footers, footnotes, endnotes, comments.
-- `xlsx_rows()` returns every sheet, hidden sheets included, as a dict of
-  sheet name to rows of strings. `xlsx_sheets()` reports `visible`,
-  `hidden`, or `veryHidden`. Shared, rich, and inline strings are resolved.
-  Phonetic runs are skipped. Cells are placed by their reference, so a blank
-  cell leaves a gap. Numbers and dates stay as stored. Dates are serials.
-
-### io
-
-- `read_text()` decodes UTF-8 and strips a BOM, then falls back to cp1252
-  with `errors="replace"`.
-- `utf8_stdout()` reconfigures stdout and stderr to UTF-8 with
-  `errors="replace"`. A stream that cannot be reconfigured is left as it is.
-- `Tee(path)` writes UTF-8 to the file and echoes to stdout. Call it like
-  `print`. `write` sends the string through unchanged.
+Each parser is that fix, with a test that pins it. The rules are in
+[What the calls guarantee](docs/reference.md).
 
 ## Tests
 
 ```bash
-python -W error -m pytest -q
+python3 -m pip install pytest
+python3 -W error -m pytest -q
 ```
 
 68 tests. Nothing else is required at runtime. The suite needs pytest.
-`-W error` is there because an invalid escape in a test string raises only
-a `SyntaxWarning`, and this suite has shipped one.
+`python3 -m pip install -e .` does not install it.
 
-GitHub Actions runs that command on Ubuntu and Windows for Python 3.10,
-3.11, 3.12, and 3.13. The workflow is `.github/workflows/tests.yml`, on
-every push and pull request.
+`-W error` fails the run on a `DeprecationWarning` or a `SyntaxWarning`.
+GitHub Actions runs that pytest command as `python` on Ubuntu and Windows
+for Python 3.10, 3.11, 3.12, and 3.13. The workflow is
+[`.github/workflows/tests.yml`](.github/workflows/tests.yml), on every push
+and pull request.
 
 ## Limits
 

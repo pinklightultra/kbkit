@@ -53,11 +53,13 @@ def issue_keys(text: str, *, projects: Iterable[str] | None = None,
 def field_text(value: Any) -> str:
     """Flatten any Jira field value to text.
 
-    None -> ""; str as is; numbers and bools via str(); lists joined with ", "
-    (empty items dropped); an ADF doc via ``adf.to_text`` (stripped); a
-    cascading select ``{"value", "child": {...}}`` -> "parent > child"; other
-    dicts -> the first string among value / name / displayName / key / text;
-    anything else -> compact JSON so nothing is silently lost.
+    Checked in this order. None -> "". A str is returned as it is. A bool,
+    int, or float goes through str(). A list is joined with ", " and empty
+    items are dropped. A dict whose ``type`` is ``"doc"`` is ``adf.to_text``,
+    stripped. A cascading select ``{"value", "child": {...}}`` is
+    "parent > child". Any other dict uses the first string among value, name,
+    displayName, key, and text, or compact JSON when none of those is a
+    string. Anything left over becomes str(value). Nothing here truncates.
     """
     if value is None:
         return ""
@@ -141,8 +143,9 @@ def epic_keys(doc: Any, *, projects: Iterable[str] | None = None) -> tuple[list[
       come from the NEXT cell only: its text, its cards, and its link targets,
       so plain-text keys, inlineCards and links labelled with a summary all
       count.
-    * ``source == "line"``: no such row; an ``Epic:`` / ``Epic ID:`` line in a
-      paragraph or heading outside any table.
+    * ``source == "line"``: no such row. An ``Epic:`` / ``Epic ID:`` line
+      outside any table. In ADF that line has to be a paragraph or a heading.
+      In HTML it is any text outside a table, including a div or a list item.
     * ``source is None``: neither was found.
 
     An EMPTY ``keys`` list means UNMEASURED, never "this page has no epic",
